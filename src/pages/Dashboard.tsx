@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { DashboardLayout } from '../components/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Document } from '../types/database';
+import type { Document } from '../types/database';
 import { FileText, FilePlus, TrendingUp, Clock } from 'lucide-react';
 
 export function Dashboard() {
@@ -33,21 +33,22 @@ export function Dashboard() {
 
       if (error) throw error;
 
-      setDocuments(data || []);
+      const docs = (data ?? []) as Document[];
+      setDocuments(docs);
 
       const now = new Date();
       const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
       const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-      const thisWeek = (data || []).filter(
+      const thisWeek = docs.filter(
         (doc) => new Date(doc.created_at) > weekAgo
       ).length;
-      const thisMonth = (data || []).filter(
+      const thisMonth = docs.filter(
         (doc) => new Date(doc.created_at) > monthAgo
       ).length;
 
       setStats({
-        total: data?.length || 0,
+        total: docs.length,
         thisWeek,
         thisMonth,
       });
@@ -169,12 +170,12 @@ export function Dashboard() {
                     <div>
                       <h3 className="font-medium text-slate-900">{doc.title}</h3>
                       <p className="text-sm text-slate-600">
-                        {doc.format.toUpperCase()} • {new Date(doc.created_at).toLocaleDateString()}
+                        {doc.format.toUpperCase()} - {new Date(doc.created_at).toLocaleDateString()}
                       </p>
                     </div>
                   </div>
                   <Link
-                    to={`/editor?id=${doc.id}`}
+                    to={`/documents/${doc.id}`}
                     className="text-blue-600 hover:text-blue-700 text-sm font-medium"
                   >
                     View

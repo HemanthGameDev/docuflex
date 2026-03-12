@@ -14,8 +14,15 @@ interface ConvertRequest {
   templateId?: string;
 }
 
+interface TemplateStyle {
+  fontSize: string;
+  fontFamily: string;
+  maxWidth: string;
+  style: string;
+}
+
 const applyTemplate = (content: string, title: string, templateId?: string): string => {
-  const templates: Record<string, any> = {
+  const templates: Record<string, TemplateStyle> = {
     resume: {
       fontSize: '11pt',
       fontFamily: 'Arial, sans-serif',

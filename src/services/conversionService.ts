@@ -1,6 +1,6 @@
 import { marked } from 'marked';
 import { sanitizeHTML, sanitizeText } from '../utils/sanitize';
-import htmlDocx from 'html-docx-js';
+import { convertHtmlToDocx } from './docxService';
 
 export type ContentType = 'plain' | 'markdown' | 'richtext';
 export type ExportFormat = 'pdf' | 'docx' | 'html';
@@ -240,8 +240,7 @@ export const generateHTMLDocument = (
 };
 
 export const convertToDocx = async (htmlContent: string): Promise<Blob> => {
-  const converted = htmlDocx.asBlob(htmlContent);
-  return converted;
+  return convertHtmlToDocx(htmlContent);
 };
 
 export const downloadFile = (
@@ -275,12 +274,14 @@ export const exportDocument = async (
       break;
 
     case 'docx':
-      const docxBlob = await convertToDocx(htmlContent);
-      downloadFile(
-        docxBlob,
-        `${options.title}.docx`,
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      );
+      {
+        const docxBlob = await convertToDocx(htmlContent);
+        downloadFile(
+          docxBlob,
+          `${options.title}.docx`,
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        );
+      }
       break;
 
     case 'pdf':

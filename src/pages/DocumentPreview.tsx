@@ -3,9 +3,10 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { DashboardLayout } from '../components/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Document, Template } from '../types/database';
-import { marked } from 'marked';
-import { sanitizeHTML, sanitizeText } from '../utils/sanitize';
+import type { Document, Template } from '../types/database';
+import { buildPreviewHtml, runDocumentPipeline } from '../services/documentPipeline';
+import { downloadFromStorage, triggerDownload } from '../services/downloadService';
+import type { ContentType, ExportFormat } from '../services/types';
 import { Download, Edit, ArrowLeft, FileText } from 'lucide-react';
 
 export function DocumentPreview() {
@@ -14,12 +15,54 @@ export function DocumentPreview() {
   const navigate = useNavigate();
   const [document, setDocument] = useState<Document | null>(null);
   const [template, setTemplate] = useState<Template | null>(null);
+  const [previewHtml, setPreviewHtml] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     loadDocument();
   }, [id, user]);
+
+  useEffect(() => {
+    if (!document) {
+      setPreviewHtml('');
+      return;
+    }
+
+    let mounted = true;
+
+    (async () => {
+      try {
+        const rendered = await buildPreviewHtml({
+          title: document.title,
+          content: document.content,
+          contentType: document.content_type as ContentType,
+          template,
+          templateId: template ? undefined : document.template_id,
+          author: user?.email ?? 'DocuFlex User',
+        });
+
+        if (!mounted) {
+          return;
+        }
+
+        const parsed = new DOMParser().parseFromString(rendered, 'text/html');
+        const styles = Array.from(parsed.querySelectorAll('style'))
+          .map((style) => style.textContent ?? '')
+          .join('\n');
+        setPreviewHtml(`<style>${styles}</style>${parsed.body.innerHTML}`);
+      } catch (error) {
+        console.error('Error generating preview:', error);
+        if (mounted) {
+          setPreviewHtml('<p>Failed to generate preview.</p>');
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [document, template, user?.email]);
 
   const loadDocument = async () => {
     if (!id || !user) return;
@@ -39,18 +82,19 @@ export function DocumentPreview() {
         return;
       }
 
-      setDocument(docData);
+      const loadedDocument = docData as Document;
+      setDocument(loadedDocument);
 
-      if (docData.template_id) {
+      if (loadedDocument.template_id) {
         const { data: templateData } = await supabase
           .from('templates')
           .select('*')
-          .eq('id', docData.template_id)
+          .eq('id', loadedDocument.template_id)
           .maybeSingle();
 
-        if (templateData) {
-          setTemplate(templateData);
-        }
+        setTemplate((templateData as Template | null) ?? null);
+      } else {
+        setTemplate(null);
       }
     } catch (error) {
       console.error('Error loading document:', error);
@@ -59,98 +103,38 @@ export function DocumentPreview() {
     }
   };
 
-  const renderPreview = () => {
-    if (!document) return '';
-
-    let processedContent = '';
-
-    if (document.content_type === 'markdown') {
-      const html = marked(document.content) as string;
-      processedContent = sanitizeHTML(html);
-    } else if (document.content_type === 'richtext') {
-      processedContent = sanitizeHTML(document.content);
-    } else {
-      processedContent = sanitizeText(document.content).replace(/\n/g, '<br>');
-    }
-
-    if (template?.html_template) {
-      return `
-        <style>${template.css_styles}</style>
-        <div class="template-content">
-          <h1>${sanitizeText(document.title)}</h1>
-          ${processedContent}
-        </div>
-      `;
-    }
-
-    return processedContent;
-  };
-
-  const handleDownload = async (format: 'pdf' | 'docx' | 'html') => {
-    if (!document) return;
+  const handleDownload = async (format: ExportFormat) => {
+    if (!document || !user) return;
 
     setDownloading(true);
     try {
-      const sanitizedContent =
-        document.content_type === 'richtext' ? sanitizeHTML(document.content) : sanitizeText(document.content);
-
-      let endpoint = '';
-      let requestBody = {};
-
-      if (format === 'pdf') {
-        endpoint = 'generate-pdf';
-        const html = renderPreview();
-        requestBody = {
-          html,
-          title: document.title,
-        };
-      } else if (format === 'docx') {
-        endpoint = 'generate-docx';
-        requestBody = {
-          title: document.title,
-          content: sanitizedContent,
-          contentType: document.content_type,
-        };
-      } else {
-        const html = renderPreview();
-        const blob = new Blob([html], { type: 'text/html' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${document.title}.html`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-        setDownloading(false);
+      if (document.file_path && document.format === format) {
+        await downloadFromStorage(document.file_path, `${document.title}.${format}`);
         return;
       }
 
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${endpoint}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify(requestBody),
-        }
+      const result = await runDocumentPipeline({
+        userId: user.id,
+        documentId: document.id,
+        title: document.title,
+        content: document.content,
+        contentType: document.content_type as ContentType,
+        format,
+        template,
+        templateId: document.template_id,
+      });
+
+      triggerDownload(result.downloadUrl, `${document.title}.${format}`);
+      setDocument((current) =>
+        current
+          ? {
+              ...current,
+              format,
+              file_path: result.filePath,
+              file_size: result.fileSize,
+            }
+          : current
       );
-
-      if (!response.ok) {
-        throw new Error('Download failed');
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${document.title}.${format}`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
     } catch (error) {
       console.error('Error downloading document:', error);
       alert('Failed to download document');
@@ -232,7 +216,7 @@ export function DocumentPreview() {
           </div>
           <div
             className="p-8 prose prose-slate max-w-none min-h-[500px]"
-            dangerouslySetInnerHTML={{ __html: renderPreview() }}
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
           />
         </div>
 

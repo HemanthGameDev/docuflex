@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { Document, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } from "npm:docx@9.6.1";
+import { Document, Paragraph, TextRun, HeadingLevel } from "npm:docx@9.6.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -26,7 +26,6 @@ const parseInlineFormatting = (text: string): TextSegment[] => {
 
   const boldRegex = /\*\*(.+?)\*\*/g;
   const italicRegex = /\*(.+?)\*/g;
-  const combinedRegex = /(\*\*(.+?)\*\*|\*(.+?)\*)/g;
 
   let match;
   const matches: Array<{ index: number; length: number; text: string; bold?: boolean; italic?: boolean }> = [];

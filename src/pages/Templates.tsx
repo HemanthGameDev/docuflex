@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '../components/DashboardLayout';
 import { supabase } from '../lib/supabase';
-import { Template } from '../types/database';
+import type { Template } from '../types/database';
 import { FileText, ArrowRight } from 'lucide-react';
 
 export function Templates() {
@@ -19,7 +19,7 @@ export function Templates() {
       const { data, error } = await supabase.from('templates').select('*');
 
       if (error) throw error;
-      setTemplates(data || []);
+      setTemplates((data ?? []) as Template[]);
     } catch (error) {
       console.error('Error loading templates:', error);
     } finally {
@@ -44,7 +44,7 @@ export function Templates() {
     }
   };
 
-  const getCategoryIcon = (category: string) => {
+  const getCategoryIcon = () => {
     return <FileText className="w-8 h-8 text-white" />;
   };
 
@@ -74,7 +74,7 @@ export function Templates() {
                     template.category
                   )} flex items-center justify-center`}
                 >
-                  {getCategoryIcon(template.category)}
+                  {getCategoryIcon()}
                 </div>
 
                 <div className="p-6">

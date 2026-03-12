@@ -4,11 +4,12 @@ import { DashboardLayout } from '../components/DashboardLayout';
 import { RichTextEditor } from '../components/RichTextEditor';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Template } from '../types/database';
-import { marked } from 'marked';
-import { sanitizeHTML, sanitizeText } from '../utils/sanitize';
+import type { Document, Template } from '../types/database';
 import { exportDocument } from '../services/exportService';
 import { createVersion } from '../services/versionService';
+import { buildPreviewHtml } from '../services/documentPipeline';
+import { sanitizeContentForStorage } from '../services/sanitizationService';
+import type { ContentType, ExportFormat } from '../services/types';
 import toast from 'react-hot-toast';
 import {
   FileText,
@@ -23,17 +24,14 @@ import {
   ListOrdered,
   Heading1,
   Heading2,
-  History,
 } from 'lucide-react';
-
-type ContentType = 'plain' | 'markdown' | 'richtext';
-type ExportFormat = 'pdf' | 'docx' | 'html';
 
 export function Editor() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const documentId = searchParams.get('id');
+  const templateParam = searchParams.get('template');
 
   const [title, setTitle] = useState('Untitled Document');
   const [content, setContent] = useState('');
@@ -42,7 +40,7 @@ export function Editor() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
   const [templates, setTemplates] = useState<Template[]>([]);
   const [showPreview, setShowPreview] = useState(false);
-  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState('');
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -51,14 +49,66 @@ export function Editor() {
     if (documentId) {
       loadDocument();
     }
-  }, [documentId]);
+  }, [documentId, templateParam]);
+
+  useEffect(() => {
+    if (!showPreview) {
+      setPreviewHtml('');
+      return;
+    }
+
+    let mounted = true;
+
+    (async () => {
+      try {
+        const selectedTemplateData = templates.find((template) => template.id === selectedTemplate) ?? null;
+        const html = await buildPreviewHtml({
+          title,
+          content,
+          contentType,
+          template: selectedTemplateData,
+          templateId: selectedTemplateData ? undefined : selectedTemplate,
+          author: user?.email ?? 'DocuFlex User',
+        });
+
+        if (!mounted) {
+          return;
+        }
+
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        const styles = Array.from(parsed.querySelectorAll('style'))
+          .map((style) => style.textContent ?? '')
+          .join('\n');
+        setPreviewHtml(`<style>${styles}</style>${parsed.body.innerHTML}`);
+      } catch (error) {
+        console.error('Error generating preview:', error);
+        if (mounted) {
+          setPreviewHtml('<p>Failed to generate preview.</p>');
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [showPreview, title, content, contentType, selectedTemplate, templates, user?.email]);
 
   const loadTemplates = async () => {
     const { data } = await supabase.from('templates').select('*');
     if (data) {
-      setTemplates(data);
-      if (data.length > 0) {
-        setSelectedTemplate(data[0].id);
+      const templateData = data as Template[];
+      setTemplates(templateData);
+
+      if (templateParam) {
+        const fromQuery = templateData.find((template) => template.id === templateParam);
+        if (fromQuery) {
+          setSelectedTemplate(fromQuery.id);
+          return;
+        }
+      }
+
+      if (!selectedTemplate && templateData.length > 0) {
+        setSelectedTemplate(templateData[0].id);
       }
     }
   };
@@ -79,11 +129,12 @@ export function Editor() {
     }
 
     if (data) {
-      setTitle(data.title);
-      setContent(data.content);
-      setContentType(data.content_type as ContentType);
-      if (data.template_id) setSelectedTemplate(data.template_id);
-      setExportFormat(data.format as ExportFormat);
+      const doc = data as Document;
+      setTitle(doc.title);
+      setContent(doc.content);
+      setContentType(doc.content_type as ContentType);
+      if (doc.template_id) setSelectedTemplate(doc.template_id);
+      setExportFormat(doc.format as ExportFormat);
     }
   };
 
@@ -94,8 +145,7 @@ export function Editor() {
     const loadingToast = toast.loading('Saving document...');
 
     try {
-      const sanitizedContent =
-        contentType === 'richtext' ? sanitizeHTML(content) : sanitizeText(content);
+      const sanitizedContent = sanitizeContentForStorage(content, contentType);
 
       const documentData = {
         user_id: user.id,
@@ -108,8 +158,6 @@ export function Editor() {
         updated_at: new Date().toISOString(),
       };
 
-      let savedDocId = documentId;
-
       if (documentId) {
         const { error } = await supabase
           .from('documents')
@@ -117,7 +165,6 @@ export function Editor() {
           .eq('id', documentId);
 
         if (error) throw error;
-
         await createVersion(documentId, title, sanitizedContent, contentType, user.id);
       } else {
         const { data, error } = await supabase
@@ -128,9 +175,9 @@ export function Editor() {
 
         if (error) throw error;
         if (data) {
-          savedDocId = data.id;
-          navigate(`/editor?id=${data.id}`, { replace: true });
-          await createVersion(data.id, title, sanitizedContent, contentType, user.id);
+          const insertedDocument = data as Document;
+          navigate(`/editor?id=${insertedDocument.id}`, { replace: true });
+          await createVersion(insertedDocument.id, title, sanitizedContent, contentType, user.id);
         }
       }
 
@@ -150,17 +197,24 @@ export function Editor() {
     const loadingToast = toast.loading(`Exporting as ${exportFormat.toUpperCase()}...`);
 
     try {
-      await handleSave();
-
-      const selectedTemplateData = templates.find(t => t.id === selectedTemplate);
-
-      await exportDocument({
+      const selectedTemplateData = templates.find((template) => template.id === selectedTemplate) ?? null;
+      const result = await exportDocument({
+        userId: user.id,
         title,
         content,
         contentType,
         format: exportFormat,
         template: selectedTemplateData,
+        templateId: selectedTemplate,
+        documentId: documentId ?? undefined,
       });
+
+      const versionContent = sanitizeContentForStorage(content, contentType);
+      await createVersion(result.documentId, title, versionContent, contentType, user.id);
+
+      if (!documentId) {
+        navigate(`/editor?id=${result.documentId}`, { replace: true });
+      }
 
       toast.success(`Document exported successfully as ${exportFormat.toUpperCase()}!`, {
         id: loadingToast,
@@ -188,17 +242,6 @@ export function Editor() {
       textarea.focus();
       textarea.setSelectionRange(start + before.length, end + before.length);
     }, 0);
-  };
-
-  const renderPreview = () => {
-    if (contentType === 'markdown') {
-      const html = marked(content) as string;
-      return sanitizeHTML(html);
-    } else if (contentType === 'richtext') {
-      return sanitizeHTML(content);
-    } else {
-      return sanitizeText(content).replace(/\n/g, '<br>');
-    }
   };
 
   return (
@@ -339,12 +382,17 @@ export function Editor() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-slate-900">Editor</h2>
             </div>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="w-full h-[600px] p-4 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none font-mono text-sm resize-none"
-              placeholder="Start writing your content here..."
-            />
+
+            {contentType === 'richtext' ? (
+              <RichTextEditor content={content} onChange={setContent} />
+            ) : (
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="w-full h-[600px] p-4 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none font-mono text-sm resize-none"
+                placeholder="Start writing your content here..."
+              />
+            )}
           </div>
 
           <div>
@@ -360,9 +408,9 @@ export function Editor() {
             </div>
             <div
               className="w-full h-[600px] p-6 bg-white border border-slate-300 rounded-lg overflow-auto prose prose-slate max-w-none"
-              dangerouslySetInnerHTML={
-                showPreview ? { __html: renderPreview() } : { __html: '' }
-              }
+              dangerouslySetInnerHTML={{
+                __html: showPreview ? previewHtml : '',
+              }}
             />
           </div>
         </div>

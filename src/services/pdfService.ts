@@ -1,5 +1,4 @@
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 
 export interface PDFExportOptions {
   title: string;
@@ -11,53 +10,57 @@ export interface PDFExportOptions {
 export const generatePDFFromHTML = async (
   options: PDFExportOptions
 ): Promise<Blob> => {
-  const { title, html, format = 'a4', orientation = 'portrait' } = options;
+  const { html, format = 'a4', orientation = 'portrait' } = options;
 
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = html;
-  tempDiv.style.width = '800px';
-  tempDiv.style.padding = '40px';
-  tempDiv.style.backgroundColor = '#ffffff';
-  tempDiv.style.position = 'absolute';
-  tempDiv.style.left = '-9999px';
-  document.body.appendChild(tempDiv);
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(html, 'text/html');
+
+  const renderContainer = document.createElement('div');
+  renderContainer.style.position = 'fixed';
+  renderContainer.style.left = '-10000px';
+  renderContainer.style.top = '0';
+  renderContainer.style.width = '794px';
+  renderContainer.style.backgroundColor = '#ffffff';
+
+  const styleTag = document.createElement('style');
+  styleTag.textContent = Array.from(parsed.querySelectorAll('style'))
+    .map((style) => style.textContent ?? '')
+    .join('\n');
+
+  const bodyContainer = document.createElement('div');
+  bodyContainer.innerHTML = parsed.body.innerHTML || html;
+
+  renderContainer.appendChild(styleTag);
+  renderContainer.appendChild(bodyContainer);
+  document.body.appendChild(renderContainer);
 
   try {
-    const canvas = await html2canvas(tempDiv, {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-    });
-
-    const imgData = canvas.toDataURL('image/png');
     const pdf = new jsPDF({
       orientation,
-      unit: 'mm',
+      unit: 'pt',
       format,
     });
 
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth = canvas.width;
-    const imgHeight = canvas.height;
-    const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
-    const imgX = (pdfWidth - imgWidth * ratio) / 2;
-    const imgY = 10;
+    await new Promise<void>((resolve, reject) => {
+      try {
+        pdf.html(renderContainer, {
+          margin: [36, 36, 36, 36],
+          autoPaging: 'text',
+          html2canvas: {
+            scale: 1,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+          },
+          callback: () => resolve(),
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
 
-    pdf.addImage(
-      imgData,
-      'PNG',
-      imgX,
-      imgY,
-      imgWidth * ratio,
-      imgHeight * ratio
-    );
-
-    const pdfBlob = pdf.output('blob');
-    return pdfBlob;
+    return pdf.output('blob');
   } finally {
-    document.body.removeChild(tempDiv);
+    document.body.removeChild(renderContainer);
   }
 };
 

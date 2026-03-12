@@ -23,7 +23,9 @@ export const getDocumentAnalytics = async (
     .select('format, created_at')
     .eq('user_id', userId);
 
-  if (!documents) {
+  const documentRows = (documents ?? []) as Array<{ format: string; created_at: string }>;
+
+  if (documentRows.length === 0) {
     return {
       total: 0,
       byFormat: { pdf: 0, docx: 0, html: 0 },
@@ -38,23 +40,23 @@ export const getDocumentAnalytics = async (
   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   const stats: DocumentStats = {
-    total: documents.length,
+    total: documentRows.length,
     byFormat: {
-      pdf: documents.filter((d) => d.format === 'pdf').length,
-      docx: documents.filter((d) => d.format === 'docx').length,
-      html: documents.filter((d) => d.format === 'html').length,
+      pdf: documentRows.filter((d) => d.format === 'pdf').length,
+      docx: documentRows.filter((d) => d.format === 'docx').length,
+      html: documentRows.filter((d) => d.format === 'html').length,
     },
-    thisWeek: documents.filter(
+    thisWeek: documentRows.filter(
       (d) => new Date(d.created_at) > weekAgo
     ).length,
-    thisMonth: documents.filter(
+    thisMonth: documentRows.filter(
       (d) => new Date(d.created_at) > monthAgo
     ).length,
     recentActivity: [],
   };
 
   const activityMap = new Map<string, number>();
-  documents.forEach((doc) => {
+  documentRows.forEach((doc) => {
     const date = new Date(doc.created_at).toISOString().split('T')[0];
     activityMap.set(date, (activityMap.get(date) || 0) + 1);
   });
