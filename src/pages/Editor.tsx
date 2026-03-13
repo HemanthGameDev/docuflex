@@ -26,6 +26,101 @@ import {
   Heading2,
 } from 'lucide-react';
 
+const PREVIEW_SCOPE_SELECTOR = '.preview-frame .template-root';
+
+const scopePreviewSelector = (selector: string, scopeSelector: string): string => {
+  const trimmedSelector = selector.trim();
+  if (!trimmedSelector) {
+    return '';
+  }
+
+  const replacedSelector = trimmedSelector
+    .replace(/\bhtml\b/g, scopeSelector)
+    .replace(/\bbody\b/g, scopeSelector)
+    .replace(/:root/g, scopeSelector);
+
+  if (replacedSelector.includes(scopeSelector)) {
+    return replacedSelector;
+  }
+
+  return `${scopeSelector} ${replacedSelector}`;
+};
+
+const scopeTemplateCss = (css: string, scopeSelector: string): string => {
+  let cursor = 0;
+  let scopedCss = '';
+
+  while (cursor < css.length) {
+    const openBraceIndex = css.indexOf('{', cursor);
+    if (openBraceIndex === -1) {
+      scopedCss += css.slice(cursor);
+      break;
+    }
+
+    const selector = css.slice(cursor, openBraceIndex).trim();
+    let depth = 1;
+    let closeBraceIndex = openBraceIndex + 1;
+
+    while (closeBraceIndex < css.length && depth > 0) {
+      const character = css[closeBraceIndex];
+      if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+      }
+      closeBraceIndex += 1;
+    }
+
+    const body = css.slice(openBraceIndex + 1, closeBraceIndex - 1);
+
+    if (!selector) {
+      cursor = closeBraceIndex;
+      continue;
+    }
+
+    if (selector.startsWith('@media') || selector.startsWith('@supports') || selector.startsWith('@container')) {
+      scopedCss += `${selector}{${scopeTemplateCss(body, scopeSelector)}}`;
+      cursor = closeBraceIndex;
+      continue;
+    }
+
+    if (selector.startsWith('@')) {
+      scopedCss += `${selector}{${body}}`;
+      cursor = closeBraceIndex;
+      continue;
+    }
+
+    const scopedSelectors = selector
+      .split(',')
+      .map((singleSelector) => scopePreviewSelector(singleSelector, scopeSelector))
+      .filter(Boolean)
+      .join(', ');
+
+    scopedCss += `${scopedSelectors}{${body}}`;
+    cursor = closeBraceIndex;
+  }
+
+  return scopedCss;
+};
+
+const buildIsolatedPreviewHtml = (htmlDocument: string): string => {
+  const parsedDocument = new DOMParser().parseFromString(htmlDocument, 'text/html');
+  const styleContent = Array.from(parsedDocument.querySelectorAll('style'))
+    .map((styleTag) => styleTag.textContent ?? '')
+    .join('\n');
+  const scopedStyles = scopeTemplateCss(styleContent, PREVIEW_SCOPE_SELECTOR);
+  const templateHtml = parsedDocument.body.innerHTML;
+
+  return `
+    ${scopedStyles ? `<style>${scopedStyles}</style>` : ''}
+    <div class="preview-wrapper">
+      <div id="preview-frame" class="preview-frame">
+        <div class="template-root">${templateHtml}</div>
+      </div>
+    </div>
+  `.trim();
+};
+
 export function Editor() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -75,15 +170,13 @@ export function Editor() {
           return;
         }
 
-        const parsed = new DOMParser().parseFromString(html, 'text/html');
-        const styles = Array.from(parsed.querySelectorAll('style'))
-          .map((style) => style.textContent ?? '')
-          .join('\n');
-        setPreviewHtml(`<style>${styles}</style>${parsed.body.innerHTML}`);
+        setPreviewHtml(buildIsolatedPreviewHtml(html));
       } catch (error) {
         console.error('Error generating preview:', error);
         if (mounted) {
-          setPreviewHtml('<p>Failed to generate preview.</p>');
+          setPreviewHtml(
+            '<div class="preview-wrapper"><div id="preview-frame" class="preview-frame"><p>Failed to generate preview.</p></div></div>'
+          );
         }
       }
     })();
@@ -407,7 +500,7 @@ export function Editor() {
               </button>
             </div>
             <div
-              className="w-full h-[600px] p-6 bg-white border border-slate-300 rounded-lg overflow-auto prose prose-slate max-w-none"
+              className="w-full h-[600px] bg-slate-50 border border-slate-300 rounded-lg overflow-hidden"
               dangerouslySetInnerHTML={{
                 __html: showPreview ? previewHtml : '',
               }}
